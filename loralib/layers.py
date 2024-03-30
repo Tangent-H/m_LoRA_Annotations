@@ -13,7 +13,7 @@ class LoRALayer():
     def __init__(
         self, 
         r: int, 
-        lora_alpha: int, 
+        lora_alpha: int, # 按照原文的说法，比较类似于learning rate的一个超参数
         lora_dropout: float,
         merge_weights: bool,
     ):
@@ -30,6 +30,9 @@ class LoRALayer():
 
 
 class Embedding(nn.Embedding, LoRALayer):
+    '''
+    针对的应该是LLM的词嵌入层，和ViT的embedding不太一样，理论上ViT的embedding是下面的linear
+    '''
     # LoRA implemented in a dense layer
     def __init__(
         self,
@@ -97,8 +100,8 @@ class Linear(nn.Linear, LoRALayer):
         out_features: int, 
         r: int = 0, 
         lora_alpha: int = 1, 
-        lora_dropout: float = 0.,
-        fan_in_fan_out: bool = False, # Set this to True if the layer to replace stores weight like (fan_in, fan_out)
+        lora_dropout: float = 0.,   # 只与训练相关
+        fan_in_fan_out: bool = False, # Set this to True if the layer to replace stores weight like (fan_in, fan_out)，也就是维度颠倒了一下
         merge_weights: bool = True,
         **kwargs
     ):
@@ -114,7 +117,7 @@ class Linear(nn.Linear, LoRALayer):
             self.scaling = self.lora_alpha / self.r
             # Freezing the pre-trained weight matrix
             self.weight.requires_grad = False
-        self.reset_parameters()
+        self.reset_parameters() # 重新赋初始值
         if fan_in_fan_out:
             self.weight.data = self.weight.data.transpose(0, 1)
 
@@ -134,7 +137,7 @@ class Linear(nn.Linear, LoRALayer):
             if self.merge_weights and self.merged:
                 # Make sure that the weights are not merged
                 if self.r > 0:
-                    self.weight.data -= T(self.lora_B @ self.lora_A) * self.scaling
+                    self.weight.data -= T(self.lora_B @ self.lora_A) * self.scaling # weight对象本身还有是否求导的属性，data才是权重的数值
                 self.merged = False
         else:
             if self.merge_weights and not self.merged:
@@ -146,15 +149,18 @@ class Linear(nn.Linear, LoRALayer):
     def forward(self, x: torch.Tensor):
         def T(w):
             return w.transpose(0, 1) if self.fan_in_fan_out else w
+        # 在进行前向传播之前，会先运行上面的函数，能够确定当前状态是train还是test，下面的not self.merged其实就说明了是训练阶段，需要有dropout
         if self.r > 0 and not self.merged:
-            result = F.linear(x, T(self.weight), bias=self.bias)            
-            result += (self.lora_dropout(x) @ self.lora_A.transpose(0, 1) @ self.lora_B.transpose(0, 1)) * self.scaling
+            result = F.linear(x, T(self.weight), bias=self.bias)# F.linear就只负责给定权重和bias计算输出，不包含其他信息
+            result += (self.lora_dropout(x) @ self.lora_A.transpose(0, 1) @ self.lora_B.transpose(0, 1)) * self.scaling #这里把x当成了行向量（其实在pytorch中，行向量比列向量用得多，所以要加转置并且反转顺序
             return result
         else:
             return F.linear(x, T(self.weight), bias=self.bias)
 
 
 class MergedLinear(nn.Linear, LoRALayer):
+    # mergedLinear的优点：一个权重矩阵计算qkv三个投影（实际上就是三个投影矩阵在行上进行拼接）
+    # 暂时不太理解内部实现，尤其是合并AB的过程
     # LoRA implemented in a dense layer
     def __init__(
         self, 
@@ -186,6 +192,10 @@ class MergedLinear(nn.Linear, LoRALayer):
             # Freezing the pre-trained weight matrix
             self.weight.requires_grad = False
             # Compute the indices
+            # 这里生成了一个mask，用来标记哪些位置是lora的位置，第一句话先将out_features拆成qkv out_feature，变成了三行
+            # 第二句话，将三行中允许计算lora的位置标记为True，其他位置标记为False
+            # 第三句话，将这个mask展平（变回原样），变成一维的，这样就可以和weight的一维对应上了
+            # view可以类比numpy.reshape，-1表示自动计算这个维度的大小
             self.lora_ind = self.weight.new_zeros(
                 (out_features, ), dtype=torch.bool
             ).view(len(enable_lora), -1)
