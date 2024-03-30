@@ -23,7 +23,7 @@ class LoRALayer():
         if lora_dropout > 0.:
             self.lora_dropout = nn.Dropout(p=lora_dropout)
         else:
-            self.lora_dropout = lambda x: x
+            self.lora_dropout = lambda x: x # Identity, can be viewd as a placeholder similar to nn.Dropout(0)
         # Mark the weight as unmerged
         self.merged = False
         self.merge_weights = merge_weights
@@ -62,9 +62,11 @@ class Embedding(nn.Embedding, LoRALayer):
     def train(self, mode: bool = True):
         nn.Embedding.train(self, mode)
         if mode:
+            # 在训练模式下，不能合并权重，因为只更新lora的权重
             if self.merge_weights and self.merged:
                 # Make sure that the weights are not merged
                 if self.r > 0:
+                    # transpose应该只是处理行列向量的转换
                     self.weight.data -= (self.lora_B @ self.lora_A).transpose(0, 1) * self.scaling
                 self.merged = False
         else:
