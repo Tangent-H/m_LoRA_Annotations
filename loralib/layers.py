@@ -220,6 +220,7 @@ class MergedLinear(nn.Linear, LoRALayer):
     def merge_AB(self):
         def T(w):
             return w.transpose(0, 1) if self.fan_in_fan_out else w
+        # 暂时先不管F.conv1d的实际意义，反正F.conv1d(A.unsqueeze(0),B.unsqueeze(-1)).squeeze(0)实现了B@A的结果，groups的结果看文末，简而言之，就是把两个矩阵切成了几块，然后分别做矩阵乘法
         delta_w = F.conv1d(
             self.lora_A.unsqueeze(0), 
             self.lora_B.unsqueeze(-1), 
@@ -268,7 +269,7 @@ class ConvLoRA(nn.Module, LoRALayer):
             )
             self.lora_B = nn.Parameter(
               self.conv.weight.new_zeros((out_channels//self.conv.groups*kernel_size, r*kernel_size))
-            )
+            )   # weight.new_zeros()生成一个和weight相同数据类型并且在相同设备上的全0张量，与torch.zeros()不同
             self.scaling = self.lora_alpha / self.r
             # Freezing the pre-trained weight matrix
             self.conv.weight.requires_grad = False
@@ -319,3 +320,61 @@ class Conv1d(ConvLoRA):
 class Conv3d(ConvLoRA):
     def __init__(self, *args, **kwargs):
         super(Conv3d, self).__init__(nn.Conv3d, *args, **kwargs)
+
+'''
+>>> bq = torch.tensor([[1],[2],[3],[4]])
+>>> bq
+tensor([[1],
+        [2],
+        [3],
+        [4]])
+>>> aq = torch.tensor([[1,2,3]])
+>>> bv = 2*bq
+>>> bv
+tensor([[2],
+        [4],
+        [6],
+        [8]])
+>>> av = 2*aq
+>>> av
+tensor([[2, 4, 6]])
+>>> F.conv1d(aq.unsqueeze(0),bq.unsqueeze(-1)).squeeze(0)
+tensor([[ 1,  2,  3],
+        [ 2,  4,  6],
+        [ 3,  6,  9],
+        [ 4,  8, 12]])
+>>> F.conv1d(av.unsqueeze(0),bv.unsqueeze(-1)).squeeze(0)
+tensor([[ 4,  8, 12],
+        [ 8, 16, 24],
+        [12, 24, 36],
+        [16, 32, 48]])
+>>> B = torch.cat((bq,bv),dim=1) 
+>>> B
+tensor([[1, 2],
+        [2, 4],
+        [3, 6],
+        [4, 8]])
+>>> B = torch.cat((bq,bv),dim=0)
+>>> B
+tensor([[1],
+        [2],
+        [3],
+        [4],
+        [2],
+        [4],
+        [6],
+        [8]])
+>>> A = torch.cat((aq,av),dim=0)
+>>> A
+tensor([[1, 2, 3],
+        [2, 4, 6]])
+>>> F.conv1d(A.unsqueeze(0),B.unsqueeze(-1),groups=2).squeeze(0)
+tensor([[ 1,  2,  3],
+        [ 2,  4,  6],
+        [ 3,  6,  9],
+        [ 4,  8, 12],
+        [ 4,  8, 12],
+        [ 8, 16, 24],
+        [12, 24, 36],
+        [16, 32, 48]])
+'''
